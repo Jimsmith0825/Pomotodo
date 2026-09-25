@@ -1,4 +1,4 @@
-// PomoTodo v1.3 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder)
+// PomoTodo v1.4 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
 // Target: .NET Framework 4.x (built into Windows 10/11)
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("PomoTodo")]
 [assembly: System.Reflection.AssemblyProduct("PomoTodo")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
 
 namespace PomoTodo
 {
@@ -33,6 +33,7 @@ namespace PomoTodo
         public DateTime? DoneAt;
         public int Pomos;     // completed pomodoros
         public int Target;    // estimated pomodoros (0 = not set)
+        public DateTime Modified = DateTime.MinValue;   // last change (sync: newest copy wins)
     }
 
     class RecordItem
@@ -224,10 +225,44 @@ namespace PomoTodo
             catch { return false; }
         }
 
-        public static List<TodoItem> LoadTodos(string dir)
+        // ---------------- Sync model (v1.4) ----------------
+        // Each PC writes ONLY its own files in the sync folder:  todos@PC.tsv, records@PC.tsv, deleted@PC.tsv
+        // Two PCs never write the same file, so OneDrive / Google Drive never create conflict copies
+        // (like records-DESKTOP-XXX-2.tsv). On load, every data file in the folder is merged, including the
+        // old shared todos.tsv / records.tsv and old conflict copies:
+        //   todos   - per Id, the copy with the newest "Modified" time wins
+        //   records - union (same start time + type + task = same record)
+        //   deleted - union of tombstones; a deleted todo/record is removed on every PC
+        public static string PC
+        {
+            get
+            {
+                var s = new string((Environment.MachineName ?? "").Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_').ToArray());
+                return s == "" ? "PC" : s;
+            }
+        }
+        static string MyFile(string kind) { return kind + "@" + PC + ".tsv"; }
+
+        // todos.tsv, todos-DESKTOP-X.tsv, todos-DESKTOP-X-2.tsv (OneDrive conflict copies), "todos (1).tsv" (Google Drive), todos@PC.tsv
+        static string[] DataFiles(string dir, string kind)
+        {
+            try
+            {
+                if (dir == "" || !Directory.Exists(dir)) return new string[0];
+                return Directory.GetFiles(dir, kind + "*.tsv").Where(f =>
+                {
+                    string n = Path.GetFileNameWithoutExtension(f);
+                    return n.Equals(kind, StringComparison.OrdinalIgnoreCase) || n.StartsWith(kind + "-", StringComparison.OrdinalIgnoreCase) || n.StartsWith(kind + "@", StringComparison.OrdinalIgnoreCase) || n.StartsWith(kind + " (", StringComparison.OrdinalIgnoreCase);
+                }).OrderBy(f => Path.GetFileNameWithoutExtension(f).Length == kind.Length ? 0 : 1).ThenBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+            catch { return new string[0]; }
+        }
+        static IEnumerable<string> AllDataFiles(string dir) { return DataFiles(dir, "todos").Concat(DataFiles(dir, "records")).Concat(DataFiles(dir, "deleted")); }
+        static bool IsLegacy(string f) { return !Path.GetFileName(f).Contains("@"); }
+
+        static List<TodoItem> ReadTodosFile(string f)
         {
             var list = new List<TodoItem>();
-            string f = Path.Combine(dir, "todos.tsv");
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
@@ -235,22 +270,29 @@ namespace PomoTodo
                 if (p.Length < 6) continue;
                 int n; int.TryParse(p[5], out n);
                 int tg = 0; if (p.Length > 6) int.TryParse(p[6], out tg);
-                list.Add(new TodoItem { Id = p[0], Text = p[1], Done = p[2] == "1", Created = PD(p[3]) ?? DateTime.Now, DoneAt = PD(p[4]), Pomos = n, Target = tg });
+                var t = new TodoItem { Id = p[0], Text = p[1], Done = p[2] == "1", Created = PD(p[3]) ?? DateTime.Now, DoneAt = PD(p[4]), Pomos = n, Target = tg };
+                t.Modified = (p.Length > 7 ? PD(p[7]) : null) ?? t.DoneAt ?? t.Created;   // old files have no Modified column
+                list.Add(t);
             }
             return list;
+        }
+        static string TodoRow(TodoItem t, bool withModified)
+        {
+            var sb = new StringBuilder();
+            sb.Append(t.Id).Append('\t').Append(Clean(t.Text)).Append('\t').Append(t.Done ? "1" : "0").Append('\t')
+              .Append(D(t.Created)).Append('\t').Append(D(t.DoneAt)).Append('\t').Append(t.Pomos).Append('\t').Append(t.Target);
+            if (withModified) sb.Append('\t').Append(D(t.Modified));
+            return sb.ToString();
         }
         static string TodosText(List<TodoItem> list)
         {
             var sb = new StringBuilder();
-            foreach (var t in list)
-                sb.Append(t.Id).Append('\t').Append(Clean(t.Text)).Append('\t').Append(t.Done ? "1" : "0").Append('\t')
-                  .Append(D(t.Created)).Append('\t').Append(D(t.DoneAt)).Append('\t').Append(t.Pomos).Append('\t').Append(t.Target).Append('\n');
+            foreach (var t in list) sb.Append(TodoRow(t, true)).Append('\n');
             return sb.ToString();
         }
-        public static List<RecordItem> LoadRecords(string dir)
+        static List<RecordItem> ReadRecordsFile(string f)
         {
             var list = new List<RecordItem>();
-            string f = Path.Combine(dir, "records.tsv");
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
@@ -271,69 +313,181 @@ namespace PomoTodo
                   .Append(Clean(r.Type)).Append('\t').Append(Clean(r.Task)).Append('\t').Append(Clean(r.Status)).Append('\t').Append(r.TaskId ?? "").Append('\n');
             return sb.ToString();
         }
+        public static string RKey(RecordItem r) { return Clean(r.Key); }
+        public static bool IsDeleted(RecordItem r) { return tombs.ContainsKey("R" + RKey(r)); }
 
-        public static bool HasData(string dir) { return File.Exists(Path.Combine(dir, "todos.tsv")) || File.Exists(Path.Combine(dir, "records.tsv")); }
-        static DateTime MTime(string dir)
+        // Move files that are already merged into <their folder>\old_files (keeps the cloud folder clean, deletes nothing)
+        public static void MoveToOld(string f)
         {
-            DateTime m = DateTime.MinValue;
-            foreach (var n in new[] { "todos.tsv", "records.tsv" })
+            try
             {
-                string f = Path.Combine(dir, n);
-                if (File.Exists(f)) { var t = File.GetLastWriteTimeUtc(f); if (t > m) m = t; }
+                string bak = Path.Combine(Path.GetDirectoryName(f), "old_files");
+                Directory.CreateDirectory(bak);
+                string to = Path.Combine(bak, Path.GetFileName(f));
+                if (File.Exists(to)) File.Delete(to);
+                File.Move(f, to);
             }
-            return m;
+            catch { }
         }
 
-        // last modification time we know for each sync file (written by us or already loaded)
+        // Tombstones: "T" + todo id / "R" + record key -> deletion time
+        static readonly Dictionary<string, DateTime> tombs = new Dictionary<string, DateTime>();
+        static void ReadTombs(string f)
+        {
+            if (!File.Exists(f)) return;
+            foreach (var line in ReadLines(f))
+            {
+                int i = line.LastIndexOf('\t');
+                if (i <= 0) continue;
+                string key = line.Substring(0, i);
+                DateTime at = PD(line.Substring(i + 1)) ?? DateTime.Now;
+                DateTime old;
+                if (!tombs.TryGetValue(key, out old) || at > old) tombs[key] = at;
+            }
+        }
+        static string TombsText()
+        {
+            var sb = new StringBuilder();
+            foreach (var kv in tombs.OrderBy(x => x.Value)) sb.Append(Clean(kv.Key)).Append('\t').Append(D(kv.Value)).Append('\n');
+            return sb.ToString();
+        }
+
+        // what we last loaded/saved - used to find which todos changed and what was deleted on this PC
+        static readonly Dictionary<string, string> snapTodos = new Dictionary<string, string>();
+        static readonly HashSet<string> snapRecs = new HashSet<string>();
+        static void Snapshot(List<TodoItem> todos, List<RecordItem> records)
+        {
+            snapTodos.Clear(); snapRecs.Clear();
+            foreach (var t in todos) snapTodos[t.Id] = TodoRow(t, false);
+            foreach (var r in records) snapRecs.Add(RKey(r));
+        }
+        static void Track(List<TodoItem> todos, List<RecordItem> records)
+        {
+            var now = DateTime.Now;
+            var ids = new HashSet<string>();
+            foreach (var t in todos)
+            {
+                ids.Add(t.Id);
+                string old;
+                if (!snapTodos.TryGetValue(t.Id, out old) || old != TodoRow(t, false) || t.Modified == DateTime.MinValue) t.Modified = now;
+            }
+            foreach (var id in snapTodos.Keys) if (!ids.Contains(id)) tombs["T" + id] = now;
+            var keys = new HashSet<string>(records.Select(RKey));
+            foreach (var k in snapRecs) if (!keys.Contains(k)) tombs["R" + k] = now;
+            Snapshot(todos, records);
+        }
+
+        // mtime of every sync-folder file at the moment we read or wrote it
         static readonly Dictionary<string, DateTime> known = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        static void Remember(string dir)
+        static DateTime MTimeOf(string f) { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }
+
+        static bool Newer(TodoItem a, TodoItem b)
         {
-            foreach (var n in new[] { "todos.tsv", "records.tsv" })
+            if (a.Modified != b.Modified) return a.Modified > b.Modified;
+            if (a.Pomos != b.Pomos) return a.Pomos > b.Pomos;
+            return a.Done && !b.Done;
+        }
+        static void Collect(string dir, bool remember, List<string> order, Dictionary<string, TodoItem> tm, Dictionary<string, RecordItem> rm)
+        {
+            foreach (var f in DataFiles(dir, "deleted")) { if (remember) known[f] = MTimeOf(f); ReadTombs(f); }
+            foreach (var f in DataFiles(dir, "todos"))
             {
-                string f = Path.Combine(dir, n);
-                if (File.Exists(f)) known[f] = File.GetLastWriteTimeUtc(f);
+                if (remember) known[f] = MTimeOf(f);
+                foreach (var t in ReadTodosFile(f))
+                {
+                    TodoItem o;
+                    if (!tm.TryGetValue(t.Id, out o)) { order.Add(t.Id); tm[t.Id] = t; }
+                    else if (Newer(t, o)) tm[t.Id] = t;
+                }
+            }
+            foreach (var f in DataFiles(dir, "records"))
+            {
+                if (remember) known[f] = MTimeOf(f);
+                foreach (var r in ReadRecordsFile(f)) { string k = RKey(r); if (!rm.ContainsKey(k)) rm[k] = r; }
             }
         }
+        static void Finish(List<string> order, Dictionary<string, TodoItem> tm, Dictionary<string, RecordItem> rm, out List<TodoItem> todos, out List<RecordItem> records)
+        {
+            todos = order.Select(id => tm[id]).Where(t => !tombs.ContainsKey("T" + t.Id)).ToList();
+            records = rm.Where(kv => !tombs.ContainsKey("R" + kv.Key)).Select(kv => kv.Value).OrderBy(r => r.Start).ToList();
+        }
 
-        // Load from the newest copy (sync folder or local backup)
+        // Merged data of one folder (used when choosing a sync folder)
+        public static void LoadFolder(string dir, out List<TodoItem> todos, out List<RecordItem> records)
+        {
+            var order = new List<string>(); var tm = new Dictionary<string, TodoItem>(); var rm = new Dictionary<string, RecordItem>();
+            Collect(dir, false, order, tm, rm);
+            Finish(order, tm, rm, out todos, out records);
+        }
+
+        public static bool HasData(string dir) { return DataFiles(dir, "todos").Length > 0 || DataFiles(dir, "records").Length > 0; }
+
+        // Load = merge of the local backup + every PC's files in the sync folder
         public static void LoadData(out List<TodoItem> todos, out List<RecordItem> records)
         {
-            string dir = AppDir;
-            if (SyncAvailable && HasData(SyncDir) && MTime(SyncDir) >= MTime(AppDir).AddSeconds(-2)) dir = SyncDir;
-            todos = LoadTodos(dir); records = LoadRecords(dir);
-            if (SyncAvailable) Remember(SyncDir);
+            var order = new List<string>(); var tm = new Dictionary<string, TodoItem>(); var rm = new Dictionary<string, RecordItem>();
+            Collect(AppDir, false, order, tm, rm);
+            if (SyncAvailable) Collect(SyncDir, true, order, tm, rm);
+            Finish(order, tm, rm, out todos, out records);
+            Snapshot(todos, records);
         }
 
         public static string LastSyncError = null;
         public static Exception LastSyncException = null;
         public static DateTime? LastSyncOk = null;
+        static readonly Dictionary<string, string> lastWritten = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        static void WriteSync(string f, string content)
+        {
+            string old;
+            if (File.Exists(f) && lastWritten.TryGetValue(f, out old) && old == content && known.ContainsKey(f) && Math.Abs((MTimeOf(f) - known[f]).TotalSeconds) <= 1) return;
+            WriteSafe(f, content);
+            lastWritten[f] = content; known[f] = MTimeOf(f);
+        }
         public static void SaveData(List<TodoItem> todos, List<RecordItem> records)
         {
-            string tt = TodosText(todos), rt = RecordsText(records);
+            Track(todos, records);
+            string tt = TodosText(todos), rt = RecordsText(records), dt = TombsText();
             WriteSafe(Path.Combine(AppDir, "todos.tsv"), tt);
             WriteSafe(Path.Combine(AppDir, "records.tsv"), rt);
+            WriteSafe(Path.Combine(AppDir, "deleted.tsv"), dt);
             if (!IsSynced) return;
             try
             {
                 if (!Directory.Exists(SyncDir)) Directory.CreateDirectory(SyncDir);
-                WriteSafe(Path.Combine(SyncDir, "todos.tsv"), tt);
-                WriteSafe(Path.Combine(SyncDir, "records.tsv"), rt);
-                Remember(SyncDir);
+                WriteSync(Path.Combine(SyncDir, MyFile("todos")), tt);
+                WriteSync(Path.Combine(SyncDir, MyFile("records")), rt);
+                WriteSync(Path.Combine(SyncDir, MyFile("deleted")), dt);
+                ArchiveLegacy();
                 LastSyncError = null; LastSyncException = null; LastSyncOk = DateTime.Now;
             }
             catch (Exception ex) { LastSyncError = ex.Message; LastSyncException = ex; }
         }
 
-        // True if the files in the sync folder were changed by someone else (e.g. another PC via Google Drive)
+        // Old shared files (todos.tsv) and conflict copies (records-DESKTOP-X-2.tsv) are already merged into
+        // our own files -> move them to "old_files" so the folder stays clean. Only files unchanged since we read them.
+        static void ArchiveLegacy()
+        {
+            foreach (var f in AllDataFiles(SyncDir).Where(IsLegacy).ToList())
+            {
+                try
+                {
+                    DateTime k;
+                    if (!known.TryGetValue(f, out k) || Math.Abs((MTimeOf(f) - k).TotalSeconds) > 1) continue;
+                    MoveToOld(f);
+                    known.Remove(f);
+                }
+                catch { }
+            }
+        }
+
+        // True if another PC changed / added a file in the sync folder since we last read it
         public static bool SyncChangedExternally()
         {
             if (!SyncAvailable) return false;
-            foreach (var n in new[] { "todos.tsv", "records.tsv" })
+            foreach (var f in AllDataFiles(SyncDir))
             {
-                string f = Path.Combine(SyncDir, n);
-                if (!File.Exists(f)) continue;
-                DateTime k, cur = File.GetLastWriteTimeUtc(f);
-                if (!known.TryGetValue(f, out k) || Math.Abs((cur - k).TotalSeconds) > 1) return true;
+                DateTime k;
+                if (!known.TryGetValue(f, out k) || Math.Abs((MTimeOf(f) - k).TotalSeconds) > 1) return true;
             }
             return false;
         }
@@ -645,38 +799,77 @@ namespace PomoTodo
             return null;
         }
 
+        static List<KeyValuePair<string, List<string[]>>> ReadSheets(string path)
+        {
+            if (path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
+                return new List<KeyValuePair<string, List<string[]>>> { new KeyValuePair<string, List<string[]>>("csv", Xlsx.ReadCsv(path)) };
+            return Xlsx.Read(path);
+        }
+        static List<string[]> Sheet(List<KeyValuePair<string, List<string[]>>> sheets, string name)
+        {
+            return sheets.FirstOrDefault(s => s.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+        }
+
+        // The "Records" sheet of an exported workbook -> records
+        static List<RecordItem> ParseRecords(List<string[]> rows)
+        {
+            var list = new List<RecordItem>();
+            if (rows == null || rows.Count < 2) return list;
+            var h = rows[0];
+            int cD = Find(h, "date", "日期"), cS = Find(h, "start", "开始"), cE = Find(h, "end", "结束"), cM = Find(h, "minutes", "分钟"),
+                cT = Find(h, "type", "类型"), cK = Find(h, "task", "任务"), cSt = Find(h, "status", "状态");
+            foreach (var row in rows.Skip(1))
+            {
+                var st = ExcelDate(Cell(row, cD), Cell(row, cS));
+                if (st == null) continue;
+                double m; double.TryParse(Cell(row, cM), NumberStyles.Any, Store.IC, out m);
+                DateTime en = ExcelDate(Cell(row, cD), Cell(row, cE)) ?? st.Value.AddMinutes(m);
+                if (en < st.Value) en = en.AddDays(1);
+                list.Add(new RecordItem { Start = st.Value, End = en, Minutes = m > 0 ? m : (en - st.Value).TotalMinutes, Type = cT >= 0 && Cell(row, cT) != "" ? Cell(row, cT) : "Focus", Task = Cell(row, cK), Status = cSt >= 0 && Cell(row, cSt) != "" ? Cell(row, cSt) : "Completed" });
+            }
+            return list;
+        }
+        public static List<RecordItem> ReadRecords(string path) { return ParseRecords(Sheet(ReadSheets(path), "Records")); }
+
+        // Adds records that are not in the list yet (and were not deleted); returns how many were added
+        public static int AddRecords(List<RecordItem> records, IEnumerable<RecordItem> more)
+        {
+            var existing = new HashSet<string>(records.Select(Store.RKey));
+            int n = 0;
+            foreach (var r in more)
+                if (!Store.IsDeleted(r) && existing.Add(Store.RKey(r))) { records.Add(r); n++; }
+            return n;
+        }
+
+        // Text form of the sheets, to see if a workbook already holds exactly this data (then it is not rewritten)
+        static string Norm(string[] row)
+        {
+            var cells = row.Select(c => c ?? "").ToList();
+            while (cells.Count > 0 && cells[cells.Count - 1] == "") cells.RemoveAt(cells.Count - 1);
+            return string.Join("\u0001", cells);
+        }
+        public static string Signature(List<KeyValuePair<string, List<object[]>>> sheets)
+        {
+            return string.Join("\u0003", sheets.Select(s => s.Key + "\u0002" + string.Join("\u0002", s.Value.Select(r =>
+                Norm(r.Select(v => v == null ? "" : v is string ? (string)v : Convert.ToString(v, Store.IC)).ToArray())))));
+        }
+        public static string Signature(string path)
+        {
+            try { return string.Join("\u0003", Xlsx.Read(path).Select(s => s.Key + "\u0002" + string.Join("\u0002", s.Value.Select(Norm)))); }
+            catch { return null; }
+        }
+
         // Returns message describing what was imported
         public static string Import(string path, List<TodoItem> todos, List<RecordItem> records)
         {
-            List<KeyValuePair<string, List<string[]>>> sheets;
-            if (path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
-                sheets = new List<KeyValuePair<string, List<string[]>>> { new KeyValuePair<string, List<string[]>>("csv", Xlsx.ReadCsv(path)) };
-            else
-                sheets = Xlsx.Read(path);
+            var sheets = ReadSheets(path);
             if (sheets.Count == 0) return "No sheets found.";
 
             int addedTodos = 0, addedRecords = 0;
             var recSheet = sheets.FirstOrDefault(s => s.Key.Equals("Records", StringComparison.OrdinalIgnoreCase));
             var todoSheet = sheets.FirstOrDefault(s => s.Key.Equals("Todos", StringComparison.OrdinalIgnoreCase));
 
-            if (recSheet.Value != null && recSheet.Value.Count > 1)
-            {
-                var h = recSheet.Value[0];
-                int cD = Find(h, "date", "日期"), cS = Find(h, "start", "开始"), cE = Find(h, "end", "结束"), cM = Find(h, "minutes", "分钟"),
-                    cT = Find(h, "type", "类型"), cK = Find(h, "task", "任务"), cSt = Find(h, "status", "状态");
-                var existing = new HashSet<string>(records.Select(r => r.Start.ToString(Store.DF) + "|" + r.Type + "|" + r.Task));
-                foreach (var row in recSheet.Value.Skip(1))
-                {
-                    var st = ExcelDate(Cell(row, cD), Cell(row, cS));
-                    if (st == null) continue;
-                    double m; double.TryParse(Cell(row, cM), NumberStyles.Any, Store.IC, out m);
-                    DateTime en = ExcelDate(Cell(row, cD), Cell(row, cE)) ?? st.Value.AddMinutes(m);
-                    if (en < st.Value) en = en.AddDays(1);
-                    var r = new RecordItem { Start = st.Value, End = en, Minutes = m > 0 ? m : (en - st.Value).TotalMinutes, Type = cT >= 0 && Cell(row, cT) != "" ? Cell(row, cT) : "Focus", Task = Cell(row, cK), Status = cSt >= 0 && Cell(row, cSt) != "" ? Cell(row, cSt) : "Completed" };
-                    string key = r.Start.ToString(Store.DF) + "|" + r.Type + "|" + r.Task;
-                    if (existing.Add(key)) { records.Add(r); addedRecords++; }
-                }
-            }
+            addedRecords = AddRecords(records, ParseRecords(recSheet.Value));
 
             List<string[]> taskRows = todoSheet.Value;
             if (taskRows == null && recSheet.Value == null) taskRows = sheets[0].Value;   // generic sheet: task list
@@ -988,7 +1181,7 @@ namespace PomoTodo
             // ---- Page 3: sync + excel
             tl = page("同步与 Excel");
             head("同步文件夹（OneDrive / Google Drive / 任意文件夹）");
-            note("任务和番茄记录会保存到这个文件夹。如果它在 OneDrive 里面，OneDrive 会自动上传。");
+            note("任务和番茄记录会保存到这个文件夹。每台电脑只写自己的文件（todos@电脑名.tsv），打开时自动合并所有电脑的数据，不会再产生冲突副本。");
             tSync = new TextBox { Text = Store.SyncDir == "" ? "（关闭 - 只存本机）" : Store.SyncDir, ReadOnly = true, Width = (int)(430 * k) };
             tl.Controls.Add(tSync); tl.SetColumnSpan(tSync, 2);
             var bOne = new Button { Text = "使用 OneDrive", AutoSize = true };
@@ -1905,6 +2098,20 @@ namespace PomoTodo
             if (!string.IsNullOrEmpty(st.LogPath)) return st.LogPath;
             return Store.SyncAvailable ? Path.Combine(Store.SyncDir, "PomoTodo_Log.xlsx") : null;
         }
+        // Conflict copies of the log: "PomoTodo_Log-DESKTOP-XXX.xlsx", "PomoTodo_Log-DESKTOP-XXX-2.xlsx" (OneDrive), "PomoTodo_Log (1).xlsx" (Google Drive)
+        static List<string> ExcelCopies(string target)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(target), name = Path.GetFileNameWithoutExtension(target);
+                return Directory.GetFiles(dir, name + "*.xlsx").Where(f =>
+                {
+                    string n = Path.GetFileNameWithoutExtension(f);
+                    return !Path.GetFileName(f).StartsWith("~$") && (n.StartsWith(name + "-", StringComparison.OrdinalIgnoreCase) || n.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase));
+                }).ToList();
+            }
+            catch { return new List<string>(); }
+        }
         void AutoExportNow()
         {
             exportPending = false;
@@ -1914,7 +2121,18 @@ namespace PomoTodo
             {
                 string dir = Path.GetDirectoryName(target);
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                Xlsx.Write(target, DataIO.BuildSheets(todos, records, Threshold));
+                // 1) Records that exist only in the Excel file (or in its conflict copies from another PC) are merged
+                //    back into the data first, so rewriting the workbook never loses history.
+                var copies = ExcelCopies(target);
+                int added = 0;
+                foreach (var f in new[] { target }.Concat(copies))
+                    if (File.Exists(f)) added += DataIO.AddRecords(records, DataIO.ReadRecords(f));
+                if (added > 0) { records.Sort((a, b) => a.Start.CompareTo(b.Start)); Store.SaveData(todos, records); RefreshRecords(); RefreshTodos(); }
+                // 2) Only write when the content really changed - the other PC usually already wrote the same merged data,
+                //    and fewer writes = no more "PomoTodo_Log-DESKTOP-XXX.xlsx" conflict copies.
+                var sheets = DataIO.BuildSheets(todos, records, Threshold);
+                if (!File.Exists(target) || DataIO.Signature(target) != DataIO.Signature(sheets)) Xlsx.Write(target, sheets);
+                foreach (var f in copies) Store.MoveToOld(f);
                 lastLogError = null;
             }
             catch (UnauthorizedAccessException ex)
@@ -2001,7 +2219,8 @@ namespace PomoTodo
                     var r = MessageBox.Show(this, "这个文件夹已经有 PomoTodo 数据（可能来自另一台电脑）。\n\n是 = 合并本机和文件夹的数据（推荐）\n否 = 只用文件夹里的数据（本机列表会被替换）\n取消 = 不更改",
                         "云同步", MessageBoxButtons.YesNoCancel);
                     if (r == DialogResult.Cancel) return;
-                    var ct = Store.LoadTodos(dir); var cr = Store.LoadRecords(dir);
+                    List<TodoItem> ct; List<RecordItem> cr;
+                    Store.LoadFolder(dir, out ct, out cr);
                     if (r == DialogResult.Yes) Store.Merge(todos, records, ct, cr);
                     else { todos = ct; records = cr; current = null; }
                 }
@@ -2070,6 +2289,7 @@ namespace PomoTodo
         static void Main(string[] args)
         {
             if (args.Length == 2 && args[0] == "--selftest") { SelfTest(args[1]); return; }
+            if (args.Length == 2 && args[0] == "--synctest") { SyncTest(args[1]); return; }
             bool startHidden = args.Any(a => a.Equals("--tray", StringComparison.OrdinalIgnoreCase));
             try { if (Environment.OSVersion.Platform == PlatformID.Win32NT) SetProcessDPIAware(); } catch { }
             Application.EnableVisualStyles();
@@ -2097,6 +2317,59 @@ namespace PomoTodo
                     Application.Run(form);
                 }
             }
+        }
+
+        // Simulates another PC + old conflict copies in a sync folder and checks the merge
+        static void SyncTest(string dir)
+        {
+            Directory.CreateDirectory(dir);
+            string oldSync = Store.SyncDir;
+            Store.SetSyncDir(dir);
+            var d0 = new DateTime(2026, 9, 1, 9, 0, 0);
+            // old shared files + a OneDrive conflict copy (v1.3 format)
+            File.WriteAllText(Path.Combine(dir, "todos.tsv"), "a\tTask A\t0\t2026-09-01 09:00:00\t\t1\t0\nb\tTask B\t0\t2026-09-01 09:00:00\t\t0\t0\n");
+            File.WriteAllText(Path.Combine(dir, "todos-DESKTOP-X-2.tsv"), "a\tTask A\t0\t2026-09-01 09:00:00\t\t3\t0\nc\tTask C\t0\t2026-09-01 09:00:00\t\t0\t0\n");
+            File.WriteAllText(Path.Combine(dir, "records.tsv"), "2026-09-01 09:00:00\t2026-09-01 09:25:00\t25\tFocus\tTask A\tCompleted\ta\n");
+            File.WriteAllText(Path.Combine(dir, "records-Alexhe.tsv"), "2026-09-01 10:00:00\t2026-09-01 10:25:00\t25\tFocus\tTask A\tCompleted\ta\n");
+            List<TodoItem> t; List<RecordItem> r;
+            Store.LoadData(out t, out r);
+            Console.WriteLine("load1 todos=" + string.Join(",", t.Select(x => x.Id + ":" + x.Pomos)) + " records=" + r.Count);
+            t.RemoveAll(x => x.Id == "b");
+            t.Add(new TodoItem { Id = "d", Text = "Task D" });
+            Store.SaveData(t, r);
+            Console.WriteLine("files=" + string.Join(",", Directory.GetFiles(dir).Select(Path.GetFileName).OrderBy(x => x)));
+            Console.WriteLine("old_files=" + string.Join(",", Directory.GetFiles(Path.Combine(dir, "old_files")).Select(Path.GetFileName).OrderBy(x => x)));
+            // the other PC (new version) edits A, deletes C, adds E and a record
+            File.WriteAllText(Path.Combine(dir, "todos@OTHER.tsv"), "a\tTask A edited\t1\t2026-09-01 09:00:00\t2026-09-02 09:00:00\t4\t0\t2099-01-01 00:00:00\nc\tTask C\t0\t2026-09-01 09:00:00\t\t0\t0\t2026-09-01 09:00:00\ne\tTask E\t0\t2026-09-01 09:00:00\t\t0\t0\t2026-09-03 09:00:00\n");
+            File.WriteAllText(Path.Combine(dir, "deleted@OTHER.tsv"), "Tc\t2026-09-03 09:00:00\n");
+            File.WriteAllText(Path.Combine(dir, "records@OTHER.tsv"), "2026-09-03 11:00:00\t2026-09-03 11:25:00\t25\tFocus\tTask E\tCompleted\te\n");
+            Console.WriteLine("changed=" + Store.SyncChangedExternally());
+            Store.LoadData(out t, out r);
+            Console.WriteLine("load2 todos=" + string.Join(",", t.Select(x => x.Id + ":" + x.Text + ":" + x.Pomos + (x.Done ? ":done" : ""))) + " records=" + r.Count);
+            Store.SaveData(t, r);
+            Console.WriteLine("changed-after-save=" + Store.SyncChangedExternally());
+            Console.WriteLine("mine:\n" + File.ReadAllText(Path.Combine(dir, "todos@" + Store.PC + ".tsv")) + File.ReadAllText(Path.Combine(dir, "deleted@" + Store.PC + ".tsv")));
+            // Excel: history that only exists in the workbook / its conflict copy is merged back; deleted records stay deleted
+            string xl = Path.Combine(dir, "PomoTodo_Log.xlsx");
+            var old = new List<RecordItem> {
+                new RecordItem { Start = new DateTime(2026, 8, 1, 9, 0, 0), End = new DateTime(2026, 8, 1, 9, 25, 0), Minutes = 25, Task = "Old only in Excel" },
+                new RecordItem { Start = new DateTime(2026, 9, 1, 9, 0, 0), End = new DateTime(2026, 9, 1, 9, 25, 0), Minutes = 25, Task = "Task A" } };
+            Xlsx.Write(xl, DataIO.BuildSheets(new List<TodoItem>(), old, 25));
+            var other = new List<RecordItem> { new RecordItem { Start = new DateTime(2026, 8, 2, 9, 0, 0), End = new DateTime(2026, 8, 2, 9, 25, 0), Minutes = 25, Task = "Other PC" },
+                new RecordItem { Start = new DateTime(2026, 9, 3, 11, 0, 0), End = new DateTime(2026, 9, 3, 11, 25, 0), Minutes = 25, Task = "Task E" } };
+            Xlsx.Write(Path.Combine(dir, "PomoTodo_Log-DESKTOP-X.xlsx"), DataIO.BuildSheets(new List<TodoItem>(), other, 25));
+            r.RemoveAll(x => x.Task == "Task E");   // deleted on this PC -> must not come back
+            Store.SaveData(t, r);
+            int added = DataIO.AddRecords(r, DataIO.ReadRecords(xl)) + DataIO.AddRecords(r, DataIO.ReadRecords(Path.Combine(dir, "PomoTodo_Log-DESKTOP-X.xlsx")));
+            Console.WriteLine("excel added=" + added + " records=" + string.Join(",", r.OrderBy(x => x.Start).Select(x => x.Task)));
+            var sh = DataIO.BuildSheets(t, r, 25);
+            Console.WriteLine("same-before-write=" + (DataIO.Signature(xl) == DataIO.Signature(sh)));
+            Xlsx.Write(xl, sh);
+            Console.WriteLine("same-after-write=" + (DataIO.Signature(xl) == DataIO.Signature(sh)));
+            r.Add(new RecordItem { Start = new DateTime(2026, 8, 3, 9, 0, 0), End = new DateTime(2026, 8, 3, 9, 12, 30), Minutes = 12.5, Task = "中文 task" });
+            Xlsx.Write(xl, DataIO.BuildSheets(t, r, 25));
+            Console.WriteLine("same-after-write2=" + (DataIO.Signature(xl) == DataIO.Signature(DataIO.BuildSheets(t, r, 25))));
+            Store.SetSyncDir(oldSync);
         }
 
         static void SelfTest(string path)
