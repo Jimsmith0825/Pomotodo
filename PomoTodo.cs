@@ -1,4 +1,4 @@
-// PomoTodo v1.4.3 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
+// PomoTodo v1.5.0-beta - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
 // Target: .NET Framework 4.x (built into Windows 10/11)
 using System;
 using System.Collections.Generic;
@@ -20,9 +20,9 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("PomoTodo")]
 [assembly: System.Reflection.AssemblyProduct("PomoTodo")]
-[assembly: System.Reflection.AssemblyVersion("1.4.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.3.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.4.3")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0-beta")]
 
 namespace PomoTodo
 {
@@ -1304,7 +1304,8 @@ namespace PomoTodo
         Panel top, bottom, todoPanel, pomoPanel, btnRow, taskRow, progress, clockBox, viewRow;
         Button btnTodo, btnPomo, btnPin, btnStart, btnReset, btnSkip, btnImport, btnExport, btnSettings, btnClearDone, btnByTime, btnByTask;
         Label lblMode, lblBig, lblToday, lblTodoInfo, lblUsed, lblSync;
-        TextBox txtAdd; ListBox lbTodos, lbHist; ComboBox cboTask;
+        TextBox txtAdd, txtDoneSearch; ListBox lbTodos, lbDone, lbHist, lastList; ComboBox cboTask;
+        Panel donePanel; Button btnDoneHeader; bool doneExpanded;
         System.Windows.Forms.Timer timer; NotifyIcon tray; ContextMenuStrip trayMenu, todoMenu, histMenu; ToolStripMenuItem miStart;
         Icon appIcon; IntPtr lastHIcon = IntPtr.Zero; string lastIconKey = "";
 
@@ -1513,25 +1514,8 @@ namespace PomoTodo
                 if (text != "") { todos.Add(new TodoItem { Text = text, Target = target }); txtAdd.Clear(); SaveAll(); RefreshTodos(); }
             };
             var spacer = new Panel { Dock = DockStyle.Top, Height = S(8) };
-            lbTodos = new ListBox { Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawVariable, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle, Font = fUI };
-            lbTodos.MeasureItem += (a, e) => { var t = lbTodos.Items[e.Index] as TodoItem; e.ItemHeight = t != null && (t.Pomos > 0 || t.Target > 0) ? S(52) : S(36); };
-            lbTodos.DrawItem += DrawTodo;
-            lbTodos.MouseDown += (a, e) =>
-            {
-                int i = lbTodos.IndexFromPoint(e.Location);
-                if (i < 0 || i >= lbTodos.Items.Count) return;
-                lbTodos.SelectedIndex = i;
-                var t = lbTodos.Items[i] as TodoItem; if (t == null) return;
-                if (e.Button == MouseButtons.Left && e.X < S(40) && e.Clicks == 1)
-                {
-                    t.Done = !t.Done; t.DoneAt = t.Done ? (DateTime?)DateTime.Now : null;
-                    SaveAll(); BeginInvoke(new Action(RefreshTodos));
-                }
-                else if (e.Button == MouseButtons.Right) todoMenu.Show(lbTodos, e.Location);
-            };
-            lbTodos.MouseDoubleClick += (a, e) => { if (e.X >= S(40)) { var t = SelTodo(); if (t != null && !t.Done) StartWith(t); } };
-            lbTodos.KeyDown += (a, e) => { if (e.KeyCode == Keys.Delete) DeleteSel(); else if (e.KeyCode == Keys.F2) RenameSel(); else if (e.KeyCode == Keys.Enter) { var t = SelTodo(); if (t != null && !t.Done) StartWith(t); } };
-            lbTodos.Resize += (a, b) => lbTodos.Invalidate();
+            lbTodos = MakeTodoList();
+            lastList = lbTodos;
             todoMenu = new ContextMenuStrip();
             todoMenu.Items.Add("开始番茄（用这个任务）", null, (a, b) => { var t = SelTodo(); if (t != null) StartWith(t); });
             todoMenu.Items.Add("设为当前任务", null, (a, b) => { var t = SelTodo(); if (t != null) { current = t; RefreshTodos(); } });
@@ -1549,9 +1533,88 @@ namespace PomoTodo
                 { todos.RemoveAll(t => t.Done); SaveAll(); RefreshTodos(); }
             };
             info.Controls.Add(lblTodoInfo); info.Controls.Add(btnClearDone);
-            var hint = new Label { Dock = DockStyle.Bottom, Height = S(20), ForeColor = Gray, Font = fSmall, Text = "双击任务 = 开始番茄  ·  点圆圈 = 完成  ·  右键 = 更多" };
-            todoPanel.Controls.Add(lbTodos); todoPanel.Controls.Add(hint); todoPanel.Controls.Add(info); todoPanel.Controls.Add(spacer); todoPanel.Controls.Add(txtAdd);
+            var hint = new Label { Dock = DockStyle.Bottom, Height = S(20), ForeColor = Gray, Font = fSmall, Text = "双击 = 开始番茄  ·  点圆圈 = 完成  ·  右键 = 更多" };
+
+            // ---- "已完成" section: folded by default; ticked tasks move here. Has its own search box.
+            donePanel = new Panel { Dock = DockStyle.Bottom, Padding = new Padding(0, S(6), 0, 0) };
+            btnDoneHeader = new Button { Dock = DockStyle.Top, Height = S(30), FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Font = fBold, BackColor = Color.FromArgb(245, 245, 245), Cursor = Cursors.Hand };
+            btnDoneHeader.FlatAppearance.BorderColor = BorderC;
+            btnDoneHeader.Click += (a, b) => { doneExpanded = !doneExpanded; LayoutDone(); if (doneExpanded) txtDoneSearch.Focus(); };
+            txtDoneSearch = new TextBox { Dock = DockStyle.Top, Font = fUI };
+            txtDoneSearch.HandleCreated += (a, b) => { try { SendMessage(txtDoneSearch.Handle, 0x1501, (IntPtr)1, "搜索已完成的任务（任务名 或 日期，如 2026-09）"); } catch { } };
+            txtDoneSearch.TextChanged += (a, b) => RefreshDone();
+            txtDoneSearch.KeyDown += (a, e) => { if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; txtDoneSearch.Clear(); } };
+            var searchGap = new Panel { Dock = DockStyle.Top, Height = S(4) };
+            lbDone = MakeTodoList();
+            donePanel.Controls.Add(lbDone); donePanel.Controls.Add(searchGap); donePanel.Controls.Add(txtDoneSearch); donePanel.Controls.Add(btnDoneHeader);
+            todoPanel.Resize += (a, b) => LayoutDone();
+
+            todoPanel.Controls.Add(lbTodos); todoPanel.Controls.Add(donePanel); todoPanel.Controls.Add(hint); todoPanel.Controls.Add(info); todoPanel.Controls.Add(spacer); todoPanel.Controls.Add(txtAdd);
+            LayoutDone();
         }
+
+        // Owner-drawn task list (used for the open list and for the "已完成" list)
+        ListBox MakeTodoList()
+        {
+            var lb = new ListBox { Dock = DockStyle.Fill, DrawMode = DrawMode.OwnerDrawVariable, IntegralHeight = false, BorderStyle = BorderStyle.FixedSingle, Font = fUI };
+            lb.MeasureItem += (a, e) => { var t = lb.Items[e.Index] as TodoItem; e.ItemHeight = t != null && (t.Pomos > 0 || t.Target > 0) ? S(70) : S(52); };
+            lb.DrawItem += DrawTodo;
+            lb.Enter += (a, b) => lastList = lb;
+            lb.MouseDown += (a, e) =>
+            {
+                lastList = lb;
+                int i = lb.IndexFromPoint(e.Location);
+                if (i < 0 || i >= lb.Items.Count) return;
+                lb.SelectedIndex = i;
+                var t = lb.Items[i] as TodoItem; if (t == null) return;
+                if (e.Button == MouseButtons.Left && e.X < S(40) && e.Clicks == 1)
+                {
+                    t.Done = !t.Done; t.DoneAt = t.Done ? (DateTime?)DateTime.Now : null;
+                    SaveAll(); BeginInvoke(new Action(RefreshTodos));
+                }
+                else if (e.Button == MouseButtons.Right) todoMenu.Show(lb, e.Location);
+            };
+            lb.MouseDoubleClick += (a, e) => { if (e.X >= S(40)) { var t = SelTodo(); if (t != null && !t.Done) StartWith(t); } };
+            lb.KeyDown += (a, e) => { if (e.KeyCode == Keys.Delete) DeleteSel(); else if (e.KeyCode == Keys.F2) RenameSel(); else if (e.KeyCode == Keys.Enter) { var t = SelTodo(); if (t != null && !t.Done) StartWith(t); } };
+            lb.Resize += (a, b) => lb.Invalidate();
+            return lb;
+        }
+
+        // Folded: only the header bar. Open: about half of the task area.
+        void LayoutDone()
+        {
+            if (donePanel == null) return;
+            int n = todos.Count(t => t.Done);
+            btnDoneHeader.Text = (doneExpanded ? "▾  " : "▸  ") + "已完成 (" + n + ")" + (doneExpanded ? "" : "   点击展开 / 搜索");
+            txtDoneSearch.Visible = doneExpanded; lbDone.Visible = doneExpanded;
+            int head = btnDoneHeader.Height + donePanel.Padding.Top;
+            int h = doneExpanded ? Math.Max(head + S(140), (todoPanel.ClientSize.Height - txtAdd.Height - S(60)) / 2) : head;
+            if (donePanel.Height != h) donePanel.Height = h;
+            if (!doneExpanded && lastList == lbDone) lastList = lbTodos;
+        }
+
+        static bool DoneMatches(TodoItem t, string q)
+        {
+            if (q == "") return true;
+            var ci = StringComparison.OrdinalIgnoreCase;
+            return (t.Text ?? "").IndexOf(q, ci) >= 0
+                || t.Created.ToString("yyyy-MM-dd HH:mm", Store.IC).IndexOf(q, ci) >= 0
+                || (t.DoneAt.HasValue && t.DoneAt.Value.ToString("yyyy-MM-dd HH:mm", Store.IC).IndexOf(q, ci) >= 0);
+        }
+        void RefreshDone()
+        {
+            if (lbDone == null) return;
+            var sel = lbDone.SelectedItem as TodoItem;
+            string q = (txtDoneSearch.Text ?? "").Trim();
+            lbDone.BeginUpdate(); lbDone.Items.Clear();
+            foreach (var t in todos.Where(x => x.Done && DoneMatches(x, q)).OrderByDescending(x => x.DoneAt ?? x.Created))
+                lbDone.Items.Add(t);
+            if (sel != null && lbDone.Items.Contains(sel)) lbDone.SelectedItem = sel;
+            if (q != "" && lbDone.Items.Count == 0) lbDone.Items.Add("没有找到匹配的已完成任务");
+            lbDone.EndUpdate();
+            LayoutDone();
+        }
+        static string When(DateTime d) { return d.ToString(d.Year == DateTime.Now.Year ? "MM-dd HH:mm" : "yyyy-MM-dd HH:mm", Store.IC); }
 
         // draw text with #tags in blue
         int DrawTagged(Graphics g, string text, Font f, int x, int y, int maxX, Color normal)
@@ -1576,9 +1639,16 @@ namespace PomoTodo
 
         void DrawTodo(object sender, DrawItemEventArgs e)
         {
-            if (e.Index < 0 || e.Index >= lbTodos.Items.Count) return;
-            var t = lbTodos.Items[e.Index] as TodoItem; if (t == null) return;
+            var lb = (ListBox)sender;
+            if (e.Index < 0 || e.Index >= lb.Items.Count) return;
             var g = e.Graphics; var r = e.Bounds;
+            var t = lb.Items[e.Index] as TodoItem;
+            if (t == null)
+            {
+                using (var bg0 = new SolidBrush(Color.White)) g.FillRectangle(bg0, r);
+                TextRenderer.DrawText(g, Convert.ToString(lb.Items[e.Index]), fSmall, new Rectangle(r.Left + S(12), r.Top, r.Width - S(24), r.Height), Gray, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                return;
+            }
             bool sel = (e.State & DrawItemState.Selected) != 0;
             using (var bg = new SolidBrush(sel ? Color.FromArgb(232, 243, 255) : Color.White)) g.FillRectangle(bg, r);
             using (var p = new Pen(Color.FromArgb(238, 238, 238))) g.DrawLine(p, r.Left, r.Bottom - 1, r.Right, r.Bottom - 1);
@@ -1610,6 +1680,10 @@ namespace PomoTodo
                     using (var b2 = new SolidBrush(t.Pomos >= t.Target ? GreenC : RedC)) g.FillRectangle(b2, bx, by, (int)(bw * Math.Min(1.0, (double)t.Pomos / t.Target)), S(4));
                 }
             }
+            // creation / completion time
+            string times = "创建 " + When(t.Created) + (t.Done && t.DoneAt.HasValue ? "   ·   完成 " + When(t.DoneAt.Value) : "");
+            int ty = r.Top + (t.Pomos > 0 || t.Target > 0 ? S(49) : S(31));
+            TextRenderer.DrawText(g, times, fSmall, new Rectangle(tx, ty, Math.Max(0, maxX - tx), S(18)), Color.FromArgb(150, 150, 150), TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         // ---------- Pomo tab ----------
@@ -1743,7 +1817,7 @@ namespace PomoTodo
             if (todo) txtAdd.Focus(); else RefreshTaskCombo();
         }
 
-        TodoItem SelTodo() { return lbTodos.SelectedItem as TodoItem; }
+        TodoItem SelTodo() { return ((lastList != null && lastList.Visible ? lastList : lbTodos).SelectedItem) as TodoItem; }
         void DeleteSel()
         {
             var t = SelTodo(); if (t == null) return;
@@ -1792,12 +1866,13 @@ namespace PomoTodo
             loadingList = true;
             var sel = SelTodo();
             lbTodos.BeginUpdate(); lbTodos.Items.Clear();
-            foreach (var t in todos.Where(x => !x.Done).Concat(todos.Where(x => x.Done).OrderByDescending(x => x.DoneAt)))
+            foreach (var t in todos.Where(x => !x.Done))
                 lbTodos.Items.Add(t);
             if (sel != null && lbTodos.Items.Contains(sel)) lbTodos.SelectedItem = sel;
             lbTodos.EndUpdate();
             loadingList = false;
             lblTodoInfo.Text = todos.Count(t => !t.Done) + " 个进行中  ·  " + todos.Count(t => t.Done) + " 个已完成";
+            RefreshDone();
             RefreshTaskCombo();
         }
         void RefreshTaskCombo()
@@ -2289,7 +2364,7 @@ namespace PomoTodo
     {
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
-        public const string Version = "1.4.3";   // keep in sync with AssemblyVersion at the top
+        public const string Version = "1.5.0-beta";   // keep in sync with AssemblyVersion at the top
 
         [STAThread]
         static void Main(string[] args)
