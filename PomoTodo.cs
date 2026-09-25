@@ -1,4 +1,4 @@
-// PomoTodo v1.4 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
+// PomoTodo v1.4.3 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
 // Target: .NET Framework 4.x (built into Windows 10/11)
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,9 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("PomoTodo")]
 [assembly: System.Reflection.AssemblyProduct("PomoTodo")]
-[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.3.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.4.3")]
 
 namespace PomoTodo
 {
@@ -1323,7 +1325,7 @@ namespace PomoTodo
             fStrike = new Font(fam, 10f, FontStyle.Strikeout); fHead = new Font(fam, 11f, FontStyle.Bold);
             fBig = new Font("Consolas", 36f, FontStyle.Bold); fClock = new Font("Consolas", 11f, FontStyle.Bold);
 
-            Text = "PomoTodo"; Font = fUI; BackColor = Bg;
+            Text = "PomoTodo v" + Program.Version; Font = fUI; BackColor = Bg;
             AutoScaleMode = AutoScaleMode.None;
             ClientSize = new Size(S(380), S(600)); MinimumSize = new Size(S(330), S(480));
             try { appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); Icon = appIcon; } catch { }
@@ -2286,6 +2288,8 @@ namespace PomoTodo
     static class Program
     {
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+
+        public const string Version = "1.4.3";   // keep in sync with AssemblyVersion at the top
 
         [STAThread]
         static void Main(string[] args)
