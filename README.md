@@ -2,8 +2,18 @@
 
 Pomodoro 番茄钟 + Todo list（Windows 托盘程序，.NET Framework 4.x，单文件 `PomoTodo.cs`）。
 
-- 直接使用：`release/PomoTodo.exe`
+- 直接使用：`release/PomoTodo.exe`（当前版本 **v1.4.3**，窗口标题和 exe 文件属性里都会显示版本号）
 - 自己编译：双击 `build.bat`（用 Windows 自带的 `csc.exe`）
+
+## 版本历史
+
+| 版本 | commit（在 `main` 上） | 说明 |
+|---|---|---|
+| v1.3.0 | `ca6388c` | 原始源码（baseline，只有源码没有 exe） |
+| v1.4.0 | `92d769b`（PR #1） | 每台电脑一个文件的同步，并合并 Excel 记录。⚠️ exe 在 Windows 上报 `MissingMethodException`，打不开 |
+| v1.4.1 | `aee81d7` | 出错时弹窗提示并写入 `crash.txt`。⚠️ 仍然有 `MissingMethodException` |
+| v1.4.2 | `c6e093e`（PR #2） | 修复 `MissingMethodException`，第一个能在 Windows 上打开的 v1.4 版本 |
+| v1.4.3 | 本 PR | 窗口标题和文件属性显示版本号，功能和 v1.4.2 相同 |
 
 ## v1.4 多电脑同步（OneDrive / Google Drive）
 
