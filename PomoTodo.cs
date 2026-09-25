@@ -156,16 +156,18 @@ namespace PomoTodo
 
         static string[] ReadLines(string f)
         {
-            // retry: cloud client may be replacing the file
+            // retry: cloud client may be replacing / downloading the file
             for (int i = 0; i < 3; i++)
             {
                 try
                 {
                     using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     using (var r = new StreamReader(fs, Encoding.UTF8))
-                        return r.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l != "").ToArray();
+                        return r.ReadToEnd().Split(new[] { '\n' }).Select(l => l.TrimEnd(new[] { '\r' })).Where(l => l != "").ToArray();
                 }
                 catch (IOException) { Thread.Sleep(150); }
+                catch (UnauthorizedAccessException) { Thread.Sleep(150); }
+                catch (Exception) { break; }
             }
             return new string[0];
         }
@@ -266,7 +268,7 @@ namespace PomoTodo
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
-                var p = line.Split('\t');
+                var p = line.Split(new[] { '\t' });
                 if (p.Length < 6) continue;
                 int n; int.TryParse(p[5], out n);
                 int tg = 0; if (p.Length > 6) int.TryParse(p[6], out tg);
@@ -296,7 +298,7 @@ namespace PomoTodo
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
-                var p = line.Split('\t');
+                var p = line.Split(new[] { '\t' });
                 if (p.Length < 6) continue;
                 var s = PD(p[0]); var e = PD(p[1]);
                 if (s == null || e == null) continue;
@@ -673,7 +675,7 @@ namespace PomoTodo
                     foreach (var r in All(rels, "Relationship"))
                     {
                         string t = (string)r.Attribute("Target") ?? "";
-                        t = t.StartsWith("/") ? t.TrimStart('/') : "xl/" + t;
+                        t = t.StartsWith("/") ? t.TrimStart(new[] { '/' }) : "xl/" + t;
                         relMap[(string)r.Attribute("Id") ?? ""] = t;
                     }
                 var wb = Load(z, "xl/workbook.xml");
@@ -969,7 +971,7 @@ namespace PomoTodo
         {
             mods = 0; key = Keys.None;
             if (string.IsNullOrWhiteSpace(s)) return false;
-            foreach (var raw in s.Split('+'))
+            foreach (var raw in s.Split(new[] { '+' }))
             {
                 string p = raw.Trim();
                 switch (p.ToLowerInvariant())
@@ -2290,6 +2292,9 @@ namespace PomoTodo
         {
             if (args.Length == 2 && args[0] == "--selftest") { SelfTest(args[1]); return; }
             if (args.Length == 2 && args[0] == "--synctest") { SyncTest(args[1]); return; }
+            AppDomain.CurrentDomain.UnhandledException += (a, e) => ShowCrash(e.ExceptionObject as Exception);
+            Application.ThreadException += (a, e) => ShowCrash(e.Exception);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             bool startHidden = args.Any(a => a.Equals("--tray", StringComparison.OrdinalIgnoreCase));
             try { if (Environment.OSVersion.Platform == PlatformID.Win32NT) SetProcessDPIAware(); } catch { }
             Application.EnableVisualStyles();
@@ -2299,7 +2304,9 @@ namespace PomoTodo
             {
                 if (!created)
                 {
-                    try { using (var ev = EventWaitHandle.OpenExisting("PomoTodo_ShowWindow_Event")) ev.Set(); } catch { }
+                    bool shown = false;
+                    try { using (var ev = EventWaitHandle.OpenExisting("PomoTodo_ShowWindow_Event")) { ev.Set(); shown = true; } } catch { }
+                    if (!shown) MessageBox.Show("PomoTodo 已经在运行（可能是旧版本，在右下角托盘里）。\n请先在托盘图标上右键 > 退出，再打开新版本。", "PomoTodo");
                     return;
                 }
                 using (var showEv = new EventWaitHandle(false, EventResetMode.AutoReset, "PomoTodo_ShowWindow_Event"))
@@ -2370,6 +2377,14 @@ namespace PomoTodo
             Xlsx.Write(xl, DataIO.BuildSheets(t, r, 25));
             Console.WriteLine("same-after-write2=" + (DataIO.Signature(xl) == DataIO.Signature(DataIO.BuildSheets(t, r, 25))));
             Store.SetSyncDir(oldSync);
+        }
+
+        static void ShowCrash(Exception ex)
+        {
+            string log = Path.Combine(Path.GetTempPath(), "PomoTodo_crash.txt");
+            try { log = Path.Combine(Store.AppDir, "crash.txt"); } catch { }
+            try { File.WriteAllText(log, DateTime.Now.ToString("s") + "\r\n" + ex + "\r\n", Encoding.UTF8); } catch { }
+            try { MessageBox.Show("PomoTodo 出错了：\n\n" + (ex == null ? "unknown" : ex.GetType().Name + ": " + ex.Message) + "\n\n详细信息已保存到：\n" + log + "\n请把这个文件发给开发者。", "PomoTodo"); } catch { }
         }
 
         static void SelfTest(string path)
