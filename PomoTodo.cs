@@ -163,7 +163,7 @@ namespace PomoTodo
                 {
                     using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     using (var r = new StreamReader(fs, Encoding.UTF8))
-                        return r.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l != "").ToArray();
+                        return r.ReadToEnd().Split(new[] { '\n' }).Select(l => l.TrimEnd(new[] { '\r' })).Where(l => l != "").ToArray();
                 }
                 catch (IOException) { Thread.Sleep(150); }
                 catch (UnauthorizedAccessException) { Thread.Sleep(150); }
@@ -268,7 +268,7 @@ namespace PomoTodo
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
-                var p = line.Split('\t');
+                var p = line.Split(new[] { '\t' });
                 if (p.Length < 6) continue;
                 int n; int.TryParse(p[5], out n);
                 int tg = 0; if (p.Length > 6) int.TryParse(p[6], out tg);
@@ -298,7 +298,7 @@ namespace PomoTodo
             if (!File.Exists(f)) return list;
             foreach (var line in ReadLines(f))
             {
-                var p = line.Split('\t');
+                var p = line.Split(new[] { '\t' });
                 if (p.Length < 6) continue;
                 var s = PD(p[0]); var e = PD(p[1]);
                 if (s == null || e == null) continue;
@@ -675,7 +675,7 @@ namespace PomoTodo
                     foreach (var r in All(rels, "Relationship"))
                     {
                         string t = (string)r.Attribute("Target") ?? "";
-                        t = t.StartsWith("/") ? t.TrimStart('/') : "xl/" + t;
+                        t = t.StartsWith("/") ? t.TrimStart(new[] { '/' }) : "xl/" + t;
                         relMap[(string)r.Attribute("Id") ?? ""] = t;
                     }
                 var wb = Load(z, "xl/workbook.xml");
@@ -971,7 +971,7 @@ namespace PomoTodo
         {
             mods = 0; key = Keys.None;
             if (string.IsNullOrWhiteSpace(s)) return false;
-            foreach (var raw in s.Split('+'))
+            foreach (var raw in s.Split(new[] { '+' }))
             {
                 string p = raw.Trim();
                 switch (p.ToLowerInvariant())
