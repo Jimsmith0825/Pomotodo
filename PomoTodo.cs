@@ -1541,13 +1541,17 @@ namespace PomoTodo
             donePanel = new Panel { Dock = DockStyle.Bottom, Padding = new Padding(0, S(6), 0, 0) };
             btnDoneHeader = new Button { Dock = DockStyle.Top, Height = S(30), FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Font = fBold, BackColor = Color.FromArgb(245, 245, 245), Cursor = Cursors.Hand };
             btnDoneHeader.FlatAppearance.BorderColor = BorderC;
-            var doneMenu = new ContextMenuStrip();
-            doneMenu.Items.Add("按完成时间排序", null, (a, b) => { doneSort = DoneSort.ByTime; RefreshDone(); });
-            doneMenu.Items.Add("按完成数量排序", null, (a, b) => { doneSort = DoneSort.ByPomos; RefreshDone(); });
-            btnDoneHeader.Click += (a, b) =>
+            btnDoneHeader.MouseDown += (a, b) =>
             {
-                if (ModifierKeys == Keys.Alt) doneMenu.Show(btnDoneHeader, new Point(btnDoneHeader.Width - S(20), btnDoneHeader.Height));
-                else { doneExpanded = !doneExpanded; LayoutDone(); if (doneExpanded) txtDoneSearch.Focus(); }
+                if ((b.Button == MouseButtons.Left) && ((Control.ModifierKeys & Keys.Alt) != 0))
+                {
+                    doneSort = (DoneSort)(((int)doneSort + 1) % 3);
+                    RefreshDone();
+                }
+                else if (b.Button == MouseButtons.Left)
+                {
+                    doneExpanded = !doneExpanded; LayoutDone(); if (doneExpanded) txtDoneSearch.Focus();
+                }
             };
             txtDoneSearch = new TextBox { Dock = DockStyle.Top, Font = fUI };
             txtDoneSearch.HandleCreated += (a, b) => { try { SendMessage(txtDoneSearch.Handle, 0x1501, (IntPtr)1, "搜索已完成的任务（任务名 或 日期，如 2026-09）"); } catch { } };
@@ -1594,7 +1598,7 @@ namespace PomoTodo
         {
             if (donePanel == null) return;
             int n = todos.Count(t => t.Done);
-            string sortInfo = doneSort == DoneSort.ByPomos ? " [按数量]" : " [按时间]";
+            string sortInfo = doneSort == DoneSort.ByPomos ? " [按完成数量]" : (doneSort == DoneSort.ByCreatedTime ? " [按创建时间]" : " [按完成时间]");
             btnDoneHeader.Text = (doneExpanded ? "▾  " : "▸  ") + "已完成 (" + n + ")" + sortInfo + (doneExpanded ? "  (Alt+Click改排序)" : "   点击展开 / Alt+Click排序");
             txtDoneSearch.Visible = doneExpanded; lbDone.Visible = doneExpanded;
             int head = btnDoneHeader.Height + donePanel.Padding.Top;
@@ -1603,8 +1607,8 @@ namespace PomoTodo
             if (!doneExpanded && lastList == lbDone) lastList = lbTodos;
         }
 
-        enum DoneSort { ByTime, ByPomos }
-        DoneSort doneSort = DoneSort.ByTime;
+        enum DoneSort { ByCompletedTime, ByCreatedTime, ByPomos }
+        DoneSort doneSort = DoneSort.ByCompletedTime;
 
         static bool DoneMatches(TodoItem t, string q)
         {
@@ -1623,6 +1627,8 @@ namespace PomoTodo
             var sorted = todos.Where(x => x.Done && DoneMatches(x, q));
             if (doneSort == DoneSort.ByPomos)
                 sorted = sorted.OrderByDescending(x => x.Pomos).ThenByDescending(x => x.DoneAt ?? x.Created);
+            else if (doneSort == DoneSort.ByCreatedTime)
+                sorted = sorted.OrderByDescending(x => x.Created);
             else
                 sorted = sorted.OrderByDescending(x => x.DoneAt ?? x.Created);
             foreach (var t in sorted)
