@@ -1,4 +1,4 @@
-// PomoTodo v1.5.0-beta - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
+// PomoTodo v1.5.0 - Pomodoro timer + Todo list, tray mode, Excel (.xlsx) import/export, cloud folder sync (OneDrive / Google Drive / any folder; one file per PC, auto-merge, no conflict copies)
 // Target: .NET Framework 4.x (built into Windows 10/11)
 using System;
 using System.Collections.Generic;
@@ -22,7 +22,7 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyProduct("PomoTodo")]
 [assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
 [assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0-beta")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0")]
 
 namespace PomoTodo
 {
@@ -896,7 +896,9 @@ namespace PomoTodo
                     if (!done && !open.Add(text.ToLowerInvariant())) continue;
                     if (done && todos.Any(t => t.Done && t.Text == text)) continue;
                     int p, tg; int.TryParse(Cell(row, cPomo), out p); int.TryParse(Cell(row, cTarget), out tg);
-                    todos.Add(new TodoItem { Text = text, Done = done, DoneAt = done ? (DateTime?)DateTime.Now : null, Pomos = p, Target = tg });
+                    var item = new TodoItem { Text = text, Done = done, Pomos = p, Target = tg };
+                    if (done) item.DoneAt = item.Created; // imported done tasks: completion time = creation time (same day)
+                    todos.Add(item);
                     addedTodos++;
                 }
             }
@@ -1539,7 +1541,14 @@ namespace PomoTodo
             donePanel = new Panel { Dock = DockStyle.Bottom, Padding = new Padding(0, S(6), 0, 0) };
             btnDoneHeader = new Button { Dock = DockStyle.Top, Height = S(30), FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Font = fBold, BackColor = Color.FromArgb(245, 245, 245), Cursor = Cursors.Hand };
             btnDoneHeader.FlatAppearance.BorderColor = BorderC;
-            btnDoneHeader.Click += (a, b) => { doneExpanded = !doneExpanded; LayoutDone(); if (doneExpanded) txtDoneSearch.Focus(); };
+            var doneMenu = new ContextMenuStrip();
+            doneMenu.Items.Add("按完成时间排序", null, (a, b) => { doneSort = DoneSort.ByTime; RefreshDone(); });
+            doneMenu.Items.Add("按完成数量排序", null, (a, b) => { doneSort = DoneSort.ByPomos; RefreshDone(); });
+            btnDoneHeader.Click += (a, b) =>
+            {
+                if (ModifierKeys == Keys.Alt) doneMenu.Show(btnDoneHeader, new Point(btnDoneHeader.Width - S(20), btnDoneHeader.Height));
+                else { doneExpanded = !doneExpanded; LayoutDone(); if (doneExpanded) txtDoneSearch.Focus(); }
+            };
             txtDoneSearch = new TextBox { Dock = DockStyle.Top, Font = fUI };
             txtDoneSearch.HandleCreated += (a, b) => { try { SendMessage(txtDoneSearch.Handle, 0x1501, (IntPtr)1, "搜索已完成的任务（任务名 或 日期，如 2026-09）"); } catch { } };
             txtDoneSearch.TextChanged += (a, b) => RefreshDone();
@@ -1585,13 +1594,17 @@ namespace PomoTodo
         {
             if (donePanel == null) return;
             int n = todos.Count(t => t.Done);
-            btnDoneHeader.Text = (doneExpanded ? "▾  " : "▸  ") + "已完成 (" + n + ")" + (doneExpanded ? "" : "   点击展开 / 搜索");
+            string sortInfo = doneSort == DoneSort.ByPomos ? " [按数量]" : " [按时间]";
+            btnDoneHeader.Text = (doneExpanded ? "▾  " : "▸  ") + "已完成 (" + n + ")" + sortInfo + (doneExpanded ? "  (Alt+Click改排序)" : "   点击展开 / Alt+Click排序");
             txtDoneSearch.Visible = doneExpanded; lbDone.Visible = doneExpanded;
             int head = btnDoneHeader.Height + donePanel.Padding.Top;
             int h = doneExpanded ? Math.Max(head + S(140), (todoPanel.ClientSize.Height - txtAdd.Height - S(60)) / 2) : head;
             if (donePanel.Height != h) donePanel.Height = h;
             if (!doneExpanded && lastList == lbDone) lastList = lbTodos;
         }
+
+        enum DoneSort { ByTime, ByPomos }
+        DoneSort doneSort = DoneSort.ByTime;
 
         static bool DoneMatches(TodoItem t, string q)
         {
@@ -1607,7 +1620,12 @@ namespace PomoTodo
             var sel = lbDone.SelectedItem as TodoItem;
             string q = (txtDoneSearch.Text ?? "").Trim();
             lbDone.BeginUpdate(); lbDone.Items.Clear();
-            foreach (var t in todos.Where(x => x.Done && DoneMatches(x, q)).OrderByDescending(x => x.DoneAt ?? x.Created))
+            var sorted = todos.Where(x => x.Done && DoneMatches(x, q));
+            if (doneSort == DoneSort.ByPomos)
+                sorted = sorted.OrderByDescending(x => x.Pomos).ThenByDescending(x => x.DoneAt ?? x.Created);
+            else
+                sorted = sorted.OrderByDescending(x => x.DoneAt ?? x.Created);
+            foreach (var t in sorted)
                 lbDone.Items.Add(t);
             if (sel != null && lbDone.Items.Contains(sel)) lbDone.SelectedItem = sel;
             if (q != "" && lbDone.Items.Count == 0) lbDone.Items.Add("没有找到匹配的已完成任务");
@@ -2364,7 +2382,7 @@ namespace PomoTodo
     {
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
-        public const string Version = "1.5.0-beta";   // keep in sync with AssemblyVersion at the top
+        public const string Version = "1.5.0";   // keep in sync with AssemblyVersion at the top
 
         [STAThread]
         static void Main(string[] args)
