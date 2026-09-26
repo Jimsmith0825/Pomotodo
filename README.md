@@ -13,7 +13,8 @@ Pomodoro 番茄钟 + Todo list（Windows 托盘程序，.NET Framework 4.x，单
 | v1.4.0 | `92d769b`（PR #1） | 每台电脑一个文件的同步，并合并 Excel 记录。⚠️ exe 在 Windows 上报 `MissingMethodException`，打不开 |
 | v1.4.1 | `aee81d7` | 出错时弹窗提示并写入 `crash.txt`。⚠️ 仍然有 `MissingMethodException` |
 | v1.4.2 | `c6e093e`（PR #2） | 修复 `MissingMethodException`，第一个能在 Windows 上打开的 v1.4 版本 |
-| v1.4.3 | 本 PR | 窗口标题和文件属性显示版本号，功能和 v1.4.2 相同 |
+| v1.4.3 | `97c3ba0`（PR #3） | 窗口标题和文件属性显示版本号，功能和 v1.4.2 相同 |
+| v1.5.0-beta | 测试版（PR 分支） | 任务下方新增可折叠的“已完成”区域：完成的任务自动移进去，默认折叠，可以按任务名或日期搜索；所有任务显示创建时间和完成时间 |
 
 ## v1.4 多电脑同步（OneDrive / Google Drive）
 
