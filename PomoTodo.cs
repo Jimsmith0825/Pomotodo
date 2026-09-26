@@ -889,25 +889,33 @@ namespace PomoTodo
                 bool hasHeader = cTask >= 0;
                 if (cTask < 0) cTask = 0;
                 var open = new HashSet<string>(todos.Where(t => !t.Done).Select(t => t.Text.Trim().ToLowerInvariant()));
-                var importedTasks = new HashSet<string>(records.Select(r => r.Task ?? ""));
+                var importedTasks = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in records.Where(r => r.Task != null)) importedTasks[r.Task] = r.Start;
                 foreach (var row in taskRows.Skip(hasHeader ? 1 : 0))
                 {
                     string text = Cell(row, cTask);
                     if (text == "") continue;
                     string stat = Cell(row, cStat).ToLowerInvariant();
                     bool done = stat == "done" || stat == "yes" || stat == "true" || stat == "1" || stat == "完成" || stat == "已完成";
-                    // If task has records, mark it as done even if status is empty
-                    if (!done && importedTasks.Contains(text)) done = true;
+                    // If task has records, mark it as done and use record time as created/done time
+                    if (importedTasks.ContainsKey(text))
+                    {
+                        done = true;
+                        var firstRecord = records.FirstOrDefault(r => (r.Task ?? "") == text && r.Type == "Focus");
+                        if (firstRecord != null && !open.Add(text.ToLowerInvariant())) continue;
+                    }
                     if (!done && !open.Add(text.ToLowerInvariant())) continue;
                     if (done && todos.Any(t => t.Done && t.Text == text)) continue;
                     int p, tg; int.TryParse(Cell(row, cPomo), out p); int.TryParse(Cell(row, cTarget), out tg);
                     var item = new TodoItem { Text = text, Done = done, Pomos = p, Target = tg };
-                    var ct = ExcelDate(Cell(row, cCreated), Cell(row, cCreated)); // created time
+                    // Try to get created/done times from Excel columns
+                    var ct = cCreated >= 0 ? ExcelDate(Cell(row, cCreated), "") : null;
                     if (ct.HasValue) item.Created = ct.Value;
+                    else if (importedTasks.ContainsKey(text)) item.Created = importedTasks[text];
                     if (done)
                     {
-                        var dt = ExcelDate(Cell(row, cDoneAt), Cell(row, cDoneAt)); // done time
-                        item.DoneAt = dt.HasValue ? dt : item.Created;
+                        var dt = cDoneAt >= 0 ? ExcelDate(Cell(row, cDoneAt), "") : null;
+                        item.DoneAt = dt.HasValue ? dt : (importedTasks.ContainsKey(text) ? importedTasks[text].AddMinutes(30) : item.Created);
                     }
                     todos.Add(item);
                     addedTodos++;
