@@ -1937,25 +1937,46 @@ namespace PomoTodo
         {
             var focus = records.Where(r => r.Type == "Focus").ToList();
             lbHist.BeginUpdate(); lbHist.Items.Clear();
-            foreach (var day in focus.GroupBy(r => r.Start.Date).OrderByDescending(g => g.Key).Take(120))
+            // Task summary mode (no dates): Shift+click "按任务"
+            if (histByTask && (Control.ModifierKeys & Keys.Shift) != 0)
             {
-                int cnt = day.Count(Counted);
-                double mins = day.Sum(r => r.Minutes);
-                lbHist.Items.Add(new HistRow { Kind = 0, Day = day.Key, Right = "完成了 " + cnt + " 个番茄 · " + Math.Round(mins) + " 分钟" });
-                if (histByTask)
+                var summary = new SortedDictionary<string, int>(StringComparer.Ordinal);
+                var mins = new SortedDictionary<string, double>(StringComparer.Ordinal);
+                foreach (var r in focus.Where(Counted))
                 {
-                    foreach (var tg in day.GroupBy(r => r.Task ?? "").OrderByDescending(g => g.Count(Counted)).ThenByDescending(g => g.Sum(r => r.Minutes)))
-                    {
-                        int c = tg.Count(Counted);
-                        lbHist.Items.Add(new HistRow { Kind = 2, Day = day.Key, Text = tg.Key, Right = c + " 个番茄 · " + Math.Round(tg.Sum(r => r.Minutes)) + " 分钟", Counted = c > 0 });
-                    }
+                    string task = r.Task ?? "(no task)";
+                    if (!summary.ContainsKey(task)) summary[task] = 0;
+                    summary[task]++;
+                    if (!mins.ContainsKey(task)) mins[task] = 0;
+                    mins[task] += r.Minutes;
                 }
-                else
+                foreach (var kv in summary.OrderByDescending(x => x.Value))
                 {
-                    foreach (var r in day.OrderByDescending(x => x.Start))
+                    lbHist.Items.Add(new HistRow { Kind = 2, Text = kv.Key, Right = kv.Value + " 个番茄 · " + Math.Round(mins[kv.Key]) + " 分钟", Counted = true });
+                }
+            }
+            else
+            {
+                foreach (var day in focus.GroupBy(r => r.Start.Date).OrderByDescending(g => g.Key).Take(120))
+                {
+                    int cnt = day.Count(Counted);
+                    double mins2 = day.Sum(r => r.Minutes);
+                    lbHist.Items.Add(new HistRow { Kind = 0, Day = day.Key, Right = "完成了 " + cnt + " 个番茄 · " + Math.Round(mins2) + " 分钟" });
+                    if (histByTask)
                     {
-                        bool c = Counted(r);
-                        lbHist.Items.Add(new HistRow { Kind = 1, Day = day.Key, Rec = r, Left = r.Start.ToString("HH:mm") + "-" + r.End.ToString("HH:mm"), Text = r.Task ?? "", Counted = c, Right = c ? Math.Round(r.Minutes) + " 分钟" : Math.Round(r.Minutes, 1) + " 分钟 · 未计入" });
+                        foreach (var tg in day.GroupBy(r => r.Task ?? "").OrderByDescending(g => g.Count(Counted)).ThenByDescending(g => g.Sum(r => r.Minutes)))
+                        {
+                            int c = tg.Count(Counted);
+                            lbHist.Items.Add(new HistRow { Kind = 2, Day = day.Key, Text = tg.Key, Right = c + " 个番茄 · " + Math.Round(tg.Sum(r => r.Minutes)) + " 分钟", Counted = c > 0 });
+                        }
+                    }
+                    else
+                    {
+                        foreach (var r in day.OrderByDescending(x => x.Start))
+                        {
+                            bool c = Counted(r);
+                            lbHist.Items.Add(new HistRow { Kind = 1, Day = day.Key, Rec = r, Left = r.Start.ToString("HH:mm") + "-" + r.End.ToString("HH:mm"), Text = r.Task ?? "", Counted = c, Right = c ? Math.Round(r.Minutes) + " 分钟" : Math.Round(r.Minutes, 1) + " 分钟 · 未计入" });
+                        }
                     }
                 }
             }
