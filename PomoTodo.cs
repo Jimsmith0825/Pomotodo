@@ -884,20 +884,31 @@ namespace PomoTodo
                 int cStat = Find(h, "status", "状态");
                 int cPomo = Find(h, "done pomodoros", "pomodoros", "pomos", "done", "番茄", "番茄数", "已完成");
                 int cTarget = Find(h, "target", "estimate", "预计", "预计番茄", "目标");
+                int cCreated = Find(h, "created", "创建", "创建时间");
+                int cDoneAt = Find(h, "completed", "done", "完成", "完成时间");
                 bool hasHeader = cTask >= 0;
                 if (cTask < 0) cTask = 0;
                 var open = new HashSet<string>(todos.Where(t => !t.Done).Select(t => t.Text.Trim().ToLowerInvariant()));
+                var importedTasks = new HashSet<string>(records.Select(r => r.Task ?? ""));
                 foreach (var row in taskRows.Skip(hasHeader ? 1 : 0))
                 {
                     string text = Cell(row, cTask);
                     if (text == "") continue;
                     string stat = Cell(row, cStat).ToLowerInvariant();
                     bool done = stat == "done" || stat == "yes" || stat == "true" || stat == "1" || stat == "完成" || stat == "已完成";
+                    // If task has records, mark it as done even if status is empty
+                    if (!done && importedTasks.Contains(text)) done = true;
                     if (!done && !open.Add(text.ToLowerInvariant())) continue;
                     if (done && todos.Any(t => t.Done && t.Text == text)) continue;
                     int p, tg; int.TryParse(Cell(row, cPomo), out p); int.TryParse(Cell(row, cTarget), out tg);
                     var item = new TodoItem { Text = text, Done = done, Pomos = p, Target = tg };
-                    if (done) item.DoneAt = item.Created; // imported done tasks: completion time = creation time (same day)
+                    var ct = ExcelDate(Cell(row, cCreated), Cell(row, cCreated)); // created time
+                    if (ct.HasValue) item.Created = ct.Value;
+                    if (done)
+                    {
+                        var dt = ExcelDate(Cell(row, cDoneAt), Cell(row, cDoneAt)); // done time
+                        item.DoneAt = dt.HasValue ? dt : item.Created;
+                    }
                     todos.Add(item);
                     addedTodos++;
                 }
